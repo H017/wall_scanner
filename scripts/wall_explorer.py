@@ -16,9 +16,10 @@ from scipy.ndimage.filters import median_filter
 import Image, ImageDraw, ImageOps
 
 def get_path_map(data):
-    global path_map, wall_map, resolution
+    global path_map, wall_map, resolution, raw_origin
 
     resolution = data.info.resolution
+    raw_origin = data.info.origin
     path_map, wall_map = raw_data_to_maps(data.data, data.info.width, data.info.height)
 
 def get_goals():
@@ -316,6 +317,7 @@ if __name__ == '__main__':
     move_base_client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
     robot_position = (randint(0,500), randint(0,1200), 0) #None
     resolution = 0
+    raw_origin = None
     wall_map = None
     path_map = None
     done = False
@@ -348,15 +350,18 @@ if __name__ == '__main__':
     while not rospy.is_shutdown():
         if not done and robot_position is not None and path_map is not None:
             for i, position in enumerate(get_goals()):
+                print position[1]*resolution+ raw_origin.position.x, position[0] * resolution+ raw_origin.position.y
                 goal = MoveBaseGoal()
-                goal.target_pose.header.frame_id = "base_link"
+                goal.target_pose.header.frame_id = "map"
                 goal.target_pose.header.stamp = rospy.Time.now()
 
-                goal.target_pose.pose.position.x = position[1]
-                goal.target_pose.pose.position.y = position[0]
+                goal.target_pose.pose.position.x = position[1] * resolution + raw_origin.position.x
+                goal.target_pose.pose.position.y = position[0] * resolution + raw_origin.position.y
 
                 for angle in position[2]:
-                    goal.target_pose.pose.orientation = tf.transformations.quaternion_from_euler(0, 0, math.radians(angle))
+                    x, y, z, w = tf.transformations.quaternion_from_euler(0, 0, math.radians(angle))
+                    goal.target_pose.pose.orientation.z = z
+                    goal.target_pose.pose.orientation.w = w
 
                     move_base_client.send_goal(goal)
                     move_base_client.wait_for_result()
