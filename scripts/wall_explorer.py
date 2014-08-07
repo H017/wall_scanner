@@ -5,6 +5,9 @@ import actionlib
 from nav_msgs.msg import OccupancyGrid
 from move_base_msgs.msg import MoveBaseGoal, MoveBaseAction
 
+from lm_pantilt.srv import Pan, Tilt, Reset
+from std_srvs.srv import Empty
+
 import math
 from random import randint
 
@@ -73,7 +76,7 @@ def get_goals():
     #     #write_image((wall_map.copy(), wall_map.copy(), wall_map.copy()), ordered_goals, "walls-sp.png")
     # print 'SP: %f' % (get_path_length(ordered_goals))
 
-    return [tuple(map(operator.add, goal, (map_origin_y, map_origin_x, []))) for goal in ordered_goals]
+    return [tuple(map(operator.add, goal, (map_origin_y, map_origin_x, [], []))) for goal in ordered_goals]
 
 def get_path_length(path):
     total_distance = 0
@@ -147,7 +150,8 @@ def snapshot_angles(goals):
 
     for i, goal in enumerate(goals):
         filtered_walls = [wall for wall in walls if distance(goal, wall) < 1.1 * (max_wall_distance / resolution)]
-        angles = []
+        robot_angles = []
+        closest_wall_angles = []
         next_goal_orientation = heading(goals[i + 1], goal) if i + 1 < len(goals) else 0
         previous_goal_orientation = heading(goals[i - 1], goal) if i > 0 else 0
 
@@ -155,19 +159,20 @@ def snapshot_angles(goals):
             closest_wall = min(filtered_walls, key=lambda x:distance(goal, x))
             filtered_walls = [wall for wall in filtered_walls if distance(closest_wall, wall) > 1.1 * (max_wall_distance / resolution)]
             angle = heading(goal, closest_wall)
+            closest_wall_angles.append(angle)
 
             if angle != next_goal_orientation:
                 if ((360 - angle) + next_goal_orientation) % 360 >= 180:
-                    angles.append((angle - 90) % 360)
+                    robot_angles.append((angle - 90) % 360)
                 else:
-                    angles.append((angle + 90) % 360)
+                    robot_angles.append((angle + 90) % 360)
             else:
                 if ((360 - angle) + previous_goal_orientation) % 360 >= 180:
-                    angles.append((angle + 90) % 360)
+                    robot_angles.append((angle + 90) % 360)
                 else:
-                    angles.append((angle - 90) % 360)
+                    robot_angles.append((angle - 90) % 360)
             
-        goals[i] = (goal[0], goal[1], angles)
+        goals[i] = (goal[0], goal[1], robot_angles, closest_wall_angles)
 
 #######################################
 #
@@ -342,15 +347,19 @@ if __name__ == '__main__':
     #processable_chunk_threshold = rospy.get_param('~processable_chunk_threshold', 0.01)
 
     # Snapshot parameters
-    snapshot_angle_precision = rospy.get_param('~snapshot_angle_precision', 10)
+    tilt_angles = rospy.get_param('~tilt_angles', [-30, 0, 90])
 
     rospy.Subscriber("/map", OccupancyGrid, get_path_map)
     goal_publisher = rospy.Publisher('/wall_explorer/goals', MoveBaseGoal, queue_size=100)
+    pan_srv = rospy.ServiceProxy("/lm_pantilt/pan", Pan)
+    tilt_srv = rospy.ServiceProxy("/lm_pantilt/tilt", Tilt)
 
     while not rospy.is_shutdown():
         if not done and robot_position is not None and path_map is not None:
             for i, position in enumerate(get_goals()):
                 print position[1]*resolution+ raw_origin.position.x, position[0] * resolution+ raw_origin.position.y
+
+                current_angle = None
                 goal = MoveBaseGoal()
                 goal.target_pose.header.frame_id = "map"
                 goal.target_pose.header.stamp = rospy.Time.now()
@@ -358,13 +367,32 @@ if __name__ == '__main__':
                 goal.target_pose.pose.position.x = position[1] * resolution + raw_origin.position.x
                 goal.target_pose.pose.position.y = position[0] * resolution + raw_origin.position.y
 
-                for angle in position[2]:
-                    x, y, z, w = tf.transformations.quaternion_from_euler(0, 0, math.radians(angle))
-                    goal.target_pose.pose.orientation.z = z
-                    goal.target_pose.pose.orientation.w = w
+                for angle in zip(position[2], position[3]):
+                    rospy.ServiceProxy('/lm_pantilt/reset', Reset)()
 
-                    move_base_client.send_goal(goal)
-                    move_base_client.wait_for_result()
+                    if current_angle is None and -90 > current_angle - angle[1] > 90:
+                        x, y, z, w = tf.transformations.quaternion_from_euler(0, 0, math.radians(angle[0]))
+                        current_angle = angle[0]
+
+                        goal.target_pose.pose.orientation.z = z
+                        goal.target_pose.pose.orientation.w = w
+
+                        move_base_client.send_goal(goal)
+                        move_base_client.wait_for_result()
+
+                    try:
+                        pan_srv(current_angle - angle[1])
+                    except Exception as e:
+                        rospy.logwarn("Cannot pan")
+
+                    for tilt in tilt_angles:
+                        try:
+                            tilt_srv(tilt)
+                        except Exception as e:
+                            rospy.logwarn("Cannot tilt")
+
+                        rospy.ServiceProxy("/pointcloud_saver/save_pointcloud", Empty)()
+
                     print 'Goal: %d' % (i)
                     rospy.sleep(3)
 
