@@ -329,7 +329,7 @@ if __name__ == '__main__':
 
     # Map cropping
     map_origin_x = rospy.get_param('~map_origin_x', 500)
-    map_origin_y = rospy.get_param('~map_origin_y', 700)
+    map_origin_y = rospy.get_param('~map_origin_y', 700)#750)
     map_width = rospy.get_param('~map_width', 1200)
     map_height = rospy.get_param('~map_height', 500)
 
@@ -347,7 +347,7 @@ if __name__ == '__main__':
     #processable_chunk_threshold = rospy.get_param('~processable_chunk_threshold', 0.01)
 
     # Snapshot parameters
-    tilt_angles = rospy.get_param('~tilt_angles', [-30, 0, 90])
+    tilt_angles = rospy.get_param('~tilt_angles', [-30, 0, 30])
 
     rospy.Subscriber("/map", OccupancyGrid, get_path_map)
     goal_publisher = rospy.Publisher('/wall_explorer/goals', MoveBaseGoal, queue_size=100)
@@ -357,22 +357,19 @@ if __name__ == '__main__':
     while not rospy.is_shutdown():
         if not done and robot_position is not None and path_map is not None:
             for i, position in enumerate(get_goals()):
-                print position[1]*resolution+ raw_origin.position.x, position[0] * resolution+ raw_origin.position.y
-
                 current_angle = None
                 goal = MoveBaseGoal()
                 goal.target_pose.header.frame_id = "map"
                 goal.target_pose.header.stamp = rospy.Time.now()
 
                 goal.target_pose.pose.position.x = position[1] * resolution + raw_origin.position.x
-                goal.target_pose.pose.position.y = position[0] * resolution + raw_origin.position.y
+                goal.target_pose.pose.position.y = -1 * (position[0] * resolution + raw_origin.position.y)
 
                 for angle in zip(position[2], position[3]):
-                    rospy.ServiceProxy('/lm_pantilt/reset', Reset)()
 
-                    if current_angle is None and -90 > current_angle - angle[1] > 90:
-                        x, y, z, w = tf.transformations.quaternion_from_euler(0, 0, math.radians(angle[0]))
-                        current_angle = angle[0]
+                    if current_angle is None or not (-90 <= angle[0] - current_angle <= 90):
+                        x, y, z, w = tf.transformations.quaternion_from_euler(0, 0, math.radians(angle[1]))
+                        current_angle = angle[1]
 
                         goal.target_pose.pose.orientation.z = z
                         goal.target_pose.pose.orientation.w = w
@@ -381,9 +378,11 @@ if __name__ == '__main__':
                         move_base_client.wait_for_result()
 
                     try:
-                        pan_srv(current_angle - angle[1])
+                        pan_srv(angle[0] - current_angle)
                     except Exception as e:
                         rospy.logwarn("Cannot pan")
+
+                    rospy.sleep(2)
 
                     for tilt in tilt_angles:
                         try:
@@ -391,9 +390,10 @@ if __name__ == '__main__':
                         except Exception as e:
                             rospy.logwarn("Cannot tilt")
 
-                        rospy.ServiceProxy("/pointcloud_saver/save_pointcloud", Empty)()
+                        rospy.sleep(2)
 
-                    print 'Goal: %d' % (i)
-                    rospy.sleep(3)
+                        #rospy.ServiceProxy("/pointcloud_saver/save_pointcloud", Empty)()
+
+                    tilt_angles = tilt_angles[::-1]
 
             done = True
