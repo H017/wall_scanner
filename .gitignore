@@ -52,8 +52,9 @@ coverage.xml
 # Sphinx documentation
 docs/_build/
 
-# Images
+# Stats
 *.png
+*-stats.txt
 
 # PyCharm
 .idea/

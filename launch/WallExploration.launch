@@ -1,0 +1,5 @@
+<launch>
+  <node pkg="wall_scanner" name="wall_explorer" type="wall_explorer.py" output="screen">
+    <param name="output_stats_path" value="$(find wall_scanner)/stats" />
+  </node>
+</launch>

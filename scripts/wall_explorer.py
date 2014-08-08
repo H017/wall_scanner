@@ -9,6 +9,7 @@ from lm_pantilt.srv import Pan, Tilt, Reset
 from std_srvs.srv import Empty
 
 import math
+import time
 from random import randint
 
 import numpy as np
@@ -26,6 +27,7 @@ def get_path_map(data):
     path_map, wall_map = raw_data_to_maps(data.data, data.info.width, data.info.height)
 
 def get_goals():
+    start_time = time.time()
     unordered_goals = set()
 
     for x1 in xrange(0, map_width, chunk_width):
@@ -41,40 +43,43 @@ def get_goals():
                 if goal is not None:
                     unordered_goals.add(goal)
 
-    starting_point = (None, 99999)
+    ordered_goals = []
+    total_distance = 0
 
-    for goal in unordered_goals:
-        path = shortest_path(unordered_goals.copy(), goal)
-        total_distance = get_path_length(path)
+    if algorithm == 'bsp':
+        starting_point = (None, 99999)
 
-        #print 'SP: %f' % (total_distance)
+        for goal in unordered_goals:
+            path = shortest_path(unordered_goals.copy(), goal)
+            total_distance = get_path_length(path)
 
-        if starting_point[1] > total_distance:
-            starting_point = (goal, total_distance)
+            if starting_point[1] > total_distance:
+                starting_point = (goal, total_distance)
 
-    ordered_goals = shortest_path(unordered_goals.copy(), starting_point[0])
-    snapshot_angles(ordered_goals)
-    write_image((path_map.copy(), path_map.copy(), path_map.copy()), ordered_goals, "path_best-sp.png", True)
-    write_image((wall_map.copy(), wall_map.copy(), wall_map.copy()), ordered_goals, "walls_best-sp.png")
+        ordered_goals = shortest_path(unordered_goals.copy(), starting_point[0])
+        snapshot_angles(ordered_goals)
+    elif algorithm == 'prim':
+        ordered_goals = prim(unordered_goals.copy())
+        snapshot_angles(ordered_goals)
+        total_distance = get_path_length(ordered_goals)
+    elif algorithm == 'mst':
+        ordered_goals = mst(unordered_goals.copy(), robot_position)
+        snapshot_angles(ordered_goals)
+        total_distance = get_path_length(ordered_goals)
+    elif algorithm == 'sp':
+        ordered_goals = shortest_path(unordered_goals.copy())
+        snapshot_angles(ordered_goals)
+        total_distance = get_path_length(ordered_goals)
 
+    if output_stats_path is not None:
+        write_image((path_map.copy(), path_map.copy(), path_map.copy()), ordered_goals, "%s/%s-path.png" % (output_stats_path, algorithm), True)
+        write_image((wall_map.copy(), wall_map.copy(), wall_map.copy()), ordered_goals, "%s/%s-walls.png" % (output_stats_path, algorithm))
 
-    # ordered_goals = prim(unordered_goals.copy())
-    # snapshot_angles(ordered_goals)
-    # write_image((path_map.copy(), path_map.copy(), path_map.copy()), ordered_goals, "path-prim.png", True)
-    #     #write_image((wall_map.copy(), wall_map.copy(), wall_map.copy()), ordered_goals, "walls-prim.png")
-    # print 'Prim: %f' % (get_path_length(ordered_goals))
-    #
-    # ordered_goals = mst(unordered_goals.copy(), robot_position)
-    # snapshot_angles(ordered_goals)
-    # write_image((path_map.copy(), path_map.copy(), path_map.copy()), ordered_goals, "path-mst.png", True)
-    #     #write_image((wall_map.copy(), wall_map.copy(), wall_map.copy()), ordered_goals, "walls-mst.png")
-    # print 'MST: %f' % (get_path_length(ordered_goals))
-    #
-    # ordered_goals = shortest_path(unordered_goals.copy())
-    # snapshot_angles(ordered_goals)
-    # write_image((path_map.copy(), path_map.copy(), path_map.copy()), ordered_goals, "path-sp.png", True)
-    #     #write_image((wall_map.copy(), wall_map.copy(), wall_map.copy()), ordered_goals, "walls-sp.png")
-    # print 'SP: %f' % (get_path_length(ordered_goals))
+        f = open('%s/%s-stats.txt' % (output_stats_path, algorithm), 'w')
+        f.write('Distance: %f meters\n' % total_distance)
+        f.write('Total time: %s seconds\n' % (time.time() - start_time))
+        f.write('Number of goals: %d\n' % len(ordered_goals))
+        f.close()
 
     return [tuple(map(operator.add, goal, (map_origin_y, map_origin_x, [], []))) for goal in ordered_goals]
 
@@ -88,7 +93,7 @@ def get_path_length(path):
 
         previous_goal = goal
 
-    return total_distance
+    return total_distance * resolution
 
 def raw_data_to_maps(raw_data, raw_width, raw_height):
     cropped_map = np.flipud(np.reshape(np.matrix(raw_data, dtype=np.uint8), (raw_width, raw_height)))[map_origin_y:map_origin_y + map_height, map_origin_x:map_origin_x + map_width]
@@ -320,12 +325,15 @@ if __name__ == '__main__':
     rospy.init_node('wall_explorer')
 
     move_base_client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
-    robot_position = (randint(0,500), randint(0,1200), 0) #None
     resolution = 0
     raw_origin = None
     wall_map = None
     path_map = None
     done = False
+
+    # Algorithms and stats
+    algorithm = rospy.get_param('~algorithm', 'bsp')
+    output_stats_path = rospy.get_param('~output_stats_path', None)
 
     # Map cropping
     map_origin_x = rospy.get_param('~map_origin_x', 500)
@@ -349,6 +357,9 @@ if __name__ == '__main__':
     # Snapshot parameters
     tilt_angles = rospy.get_param('~tilt_angles', [-30, 0, 30])
 
+    # Random robot position in the map
+    # Should reflect real robot position eventually
+    robot_position = (randint(0, map_height), randint(0, map_width), 0)
     rospy.Subscriber("/map", OccupancyGrid, get_path_map)
     goal_publisher = rospy.Publisher('/wall_explorer/goals', MoveBaseGoal, queue_size=100)
     pan_srv = rospy.ServiceProxy("/lm_pantilt/pan", Pan)
